@@ -1,0 +1,55 @@
+#!/bin/bash
+
+CACHE_DIR="$HOME/.config/awesome/core/cache/spotify-covers"
+CACHE_FILE="$CACHE_DIR/url_cache.txt"
+MAX_CACHE_AGE=$((7 * 24 * 60 * 60))
+
+mkdir -p "$CACHE_DIR"
+touch "$CACHE_FILE"
+
+clean_old_cache() {
+    find "$CACHE_DIR" -type f -mtime +7 -not -name 'url_cache.txt' -delete
+    awk -F'|' -v cache_dir="$CACHE_DIR" '{ if (system("[ -f " cache_dir "/" $2 " ]") == 0) print $0 }' "$CACHE_FILE" > "$CACHE_FILE.tmp"
+    mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+}
+
+get_cached_file() {
+    local url="$1"
+    local filename=""
+    while IFS='|' read -r cached_url cached_filename timestamp || [ -n "$cached_url" ]; do
+        if [ "$cached_url" = "$url" ]; then
+            filename="$cached_filename"
+            break
+        fi
+    done < "$CACHE_FILE"
+    echo "$filename"
+}
+
+cover_url=$(playerctl -p spotify metadata mpris:artUrl)
+if [[ -n "$cover_url" ]]; then
+    cached_filename=$(get_cached_file "$cover_url")
+    if [[ -n "$cached_filename" && -f "$CACHE_DIR/$cached_filename" ]]; then
+        cp "$CACHE_DIR/$cached_filename" /tmp/spotify_tmp.png
+        echo "Using cached cover art from $CACHE_DIR/$cached_filename"
+    else
+        timestamp=$(date +%s)
+        filename="cover_${timestamp}.png"
+        if curl -s "$cover_url" -o "$CACHE_DIR/$filename"; then
+            grep -v "^$cover_url|" "$CACHE_FILE" > "$CACHE_FILE.tmp"
+            mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+            echo "$cover_url|$filename|$timestamp" >> "$CACHE_FILE"
+            cp "$CACHE_DIR/$filename" /tmp/spotify_tmp.png
+            echo "Donwloaded new cover art and cached as $filename"
+            if [ $((RANDOM % 100)) -eq 0 ]; then
+                clean_old_cache
+            fi
+        else
+            echo "Failed to download cover art"
+            exit 1
+        fi
+    fi
+else
+    echo "No song is currently playing or cover art url not found."
+    exit 1
+fi
+

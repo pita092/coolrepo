@@ -1,0 +1,490 @@
+local api = vim.api
+
+local M = {}
+
+
+local prefix = " "
+
+function M.get_search_text(line)
+  return line:sub(#prefix)
+end
+
+function M.protect_prefix()
+  local cursor = api.nvim_win_get_cursor(0)
+
+  if cursor[2] <= #prefix then
+    api.nvim_win_set_cursor(0, { 1, #prefix })
+    return true
+  end
+
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<BS>", true, false, true), "n", false)
+end
+
+local state = {
+  buf = nil,
+  win = nil,
+  results_buf = nil,
+  results_win = nil
+}
+
+local function setup_highlights()
+  api.nvim_set_hl(0, 'MyFloatBorder', {
+    fg = '#83a5ba',
+    bg = '#0c0e0f',
+    bold = true
+  })
+  api.nvim_set_hl(0, 'MySearchBackground', {
+    bg = '#111111'
+  })
+  api.nvim_set_hl(0, 'MyFloatTitle', {
+    fg = '#83a5ba',
+    bg = "#111111",
+    bold = true
+  })
+  api.nvim_set_hl(0, 'SearchPrefix', {
+    fg = '#83a5ba',
+    bold = true
+  })
+end
+
+function M.create_float()
+  if state.win and api.nvim_win_is_valid(state.win) then
+    M.close_float()
+    return
+  end
+
+  setup_highlights()
+
+  state.buf = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_option(state.buf, 'bufhidden', 'wipe')
+
+  print("Debug - Items:", vim.inspect(M.items))   -- Add this debug line
+  api.nvim_buf_set_lines(state.buf, 0, -1, false, { prefix })
+
+
+  state.results_buf = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_option(state.results_buf, 'bufhidden', 'wipe')
+
+  api.nvim_buf_set_lines(state.results_buf, 0, -1, false, M.items)
+
+  local width = 40
+  local height = 1
+  local results_height = 30
+
+  local row = math.floor((api.nvim_get_option("lines") - (results_height + 3)) / 2)
+  local col = math.floor((api.nvim_get_option("columns") - width) / 2)
+
+
+  local input_opts = {
+    relative = 'editor',
+    row = row,
+    col = col,
+    width = width,
+    height = 5,
+    style = 'minimal',
+    title = 'search ',
+    title_pos = 'left',
+    border = {
+      { " ", "MySearchBackground" },
+      { " ", "MyFloatBorder" },
+      { " ", "MyFloatBorder" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+    }
+  }
+
+  local results_opts = {
+    relative = 'editor',
+    row = row + 2,
+    col = col,
+    width = width,
+    height = results_height,
+    style = 'minimal',
+    border = {
+      { " ", "MyFloatBorder" },
+      { " ", "MyFloatBorder" },
+      { " ", "MyFloatBorder" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+      { " ", "MySearchBackground" },
+    }
+  }
+
+  state.win = api.nvim_open_win(state.buf, true, input_opts)
+  state.results_win = api.nvim_open_win(state.results_buf, false, results_opts)
+
+  api.nvim_set_option_value('winhl', 'Normal:MySearchBackground,FloatBorder:MyFloatBorder,FloatTitle:MyFloatTitle',
+    { win = state.win })
+  api.nvim_set_option_value('winhl', 'Normal:MySearchBackground,FloatBorder:MyFloatBorder', { win = state.results_win })
+
+  for _, bufnr in ipairs({ state.buf, state.results_buf }) do
+    api.nvim_buf_set_option(bufnr, 'buftype', 'nofile')
+    api.nvim_buf_set_option(bufnr, 'swapfile', false)
+    api.nvim_buf_set_option(bufnr, 'buflisted', false)
+  end
+
+  api.nvim_win_set_option(state.win, 'winblend', 0)
+  api.nvim_win_set_option(state.results_win, 'winblend', 0)
+
+  api.nvim_create_autocmd({ "BufLeave" }, {
+    buffer = state.buf,
+    callback = function()
+      M.close_float()
+    end
+  })
+
+  local opts = { noremap = true, silent = true }
+  api.nvim_buf_set_keymap(state.buf, 'i', '<CR>', '<CMD>lua require("ui.search.search").select_item()<CR>', opts)
+  api.nvim_buf_set_keymap(state.buf, 'i', '<ESC>', '<CMD>lua require("ui.search.search").close_float()<CR>', opts)
+  api.nvim_buf_set_keymap(state.buf, 'i', '<BS>', [[<Cmd>lua require('ui.search.search').protect_prefix()<CR>]], opts)
+
+  vim.defer_fn(function()
+    api.nvim_win_set_cursor(state.win, { 1, #prefix + 1 })
+  end, 10)
+
+  vim.cmd('startinsert')
+
+  api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+    buffer = state.buf,
+    callback = function()
+      vim.api.nvim_buf_clear_namespace(state.buf, -1, 0, -1)
+      vim.api.nvim_buf_add_highlight(state.buf, -1, 'SearchPrefix', 0, 0, #prefix)
+      M.update_results()
+    end
+  })
+end
+
+function M.update_results()
+  local line = api.nvim_buf_get_lines(state.buf, 0, 1, false)[1]
+  local query = M.get_search_text(line)
+
+  local results = {}
+
+  if query == "" then
+    results = M.items
+  else
+    for _, item in ipairs(M.items) do
+      if string.lower(item):find(string.lower(query)) then
+        table.insert(results, item)
+      end
+    end
+  end
+
+  api.nvim_buf_set_lines(state.results_buf, 0, -1, false, results)
+end
+
+function M.select_item()
+  local current_line = api.nvim_buf_get_lines(state.results_buf, 0, 1, false)[1]
+  if current_line then
+    print("Selected: " .. current_line)
+    M.close_float()
+  end
+end
+
+function M.close_float()
+  if state.win and api.nvim_win_is_valid(state.win) then
+    api.nvim_win_close(state.win, true)
+  end
+  if state.results_win and api.nvim_win_is_valid(state.results_win) then
+    api.nvim_win_close(state.results_win, true)
+  end
+  state.win = nil
+  state.results_win = nil
+  state.buf = nil
+  state.results_buf = nil
+end
+
+function M.setup()
+  setup_highlights()
+  M.items = {
+    "Item 1",
+    "Item 2",
+    "Item 3",
+    "Item 4",
+    "Item 5",
+  }
+
+  api.nvim_create_user_command('FloatSearch', function()
+    M.create_float()
+  end, {
+    desc = 'Toggle floating search window'
+  })
+end
+
+return M
+
+
+
+
+
+
+
+
+
+
+
+-dsapsdadsjakkjdsankdjsa
+
+
+
+
+
+
+
+-- local api = vim.api
+--
+-- local M = {}
+--
+-- local prefix = " "
+--
+-- function _G.get_search_text(line)
+--   return line:sub(#prefix)
+-- end
+--
+-- function _G.protect_prefix()
+--   local cursor = api.nvim_win_get_cursor(0)
+--
+--   if cursor[2] <= #prefix then
+--     api.nvim_win_set_cursor(0, { 1, #prefix })
+--     return true
+--   end
+--
+--   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<BS>", true, false, true), "n", false)
+-- end
+--
+-- local state = {
+--   buf = nil,
+--   win = nil,
+-- }
+--
+-- local function setup_highlights()
+--   api.nvim_set_hl(0, 'MyFloatBorder', {
+--     fg = '#83a5ba',
+--     bg = '#0c0e0f',
+--     bold = true
+--   })
+--   api.nvim_set_hl(0, 'MySearchBackground', {
+--     bg = '#111111'
+--   })
+--   api.nvim_set_hl(0, 'MyFloatTitle', {
+--     fg = '#83a5ba',
+--     bg = "#111111",
+--     bold = true
+--   })
+--   api.nvim_set_hl(0, 'SearchPrefix', {
+--     fg = '#83a5ba',
+--     bold = true
+--   })
+-- end
+--
+-- function _G.create_float()
+--   if state.win and api.nvim_win_is_valid(state.win) then
+--     _G.close_float()
+--     return
+--   end
+--
+--   setup_highlights()
+--
+--   state.buf = api.nvim_create_buf(false, true)
+--   api.nvim_buf_set_option(state.buf, 'bufhidden', 'wipe')
+--
+--   api.nvim_buf_set_lines(state.buf, 0, -1, false, { prefix })
+--
+--   local width = 40
+--   local height = 1
+--
+--   local row = math.floor((api.nvim_get_option("lines") - (height + 3)) / 2)
+--   local col = math.floor((api.nvim_get_option("columns") - width) / 2)
+--
+--   local input_opts = {
+--     relative = 'editor',
+--     row = row,
+--     col = col,
+--     width = width,
+--     height = height,
+--     style = 'minimal',
+--     title = 'search ',
+--     title_pos = 'left',
+--     border = {
+--       { " ", "MySearchBackground" },
+--       { " ", "MyFloatBorder" },
+--       { " ", "MyFloatBorder" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--     }
+--   }
+--
+--   state.win = api.nvim_open_win(state.buf, true, input_opts)
+--
+--   api.nvim_set_option_value('winhl', 'Normal:MySearchBackground,FloatBorder:MyFloatBorder,FloatTitle:MyFloatTitle',
+--     { win = state.win })
+--
+--   api.nvim_buf_set_option(state.buf, 'buftype', 'nofile')
+--   api.nvim_buf_set_option(state.buf, 'swapfile', false)
+--   api.nvim_buf_set_option(state.buf, 'buflisted', false)
+--
+--   api.nvim_win_set_option(state.win, 'winblend', 0)
+--
+--   api.nvim_create_autocmd({ "BufLeave" }, {
+--     buffer = state.buf,
+--     callback = function()
+--       _G.close_float()
+--     end
+--   })
+--
+--   local opts = { noremap = true, silent = true }
+--   api.nvim_buf_set_keymap(state.buf, 'i', '<CR>', '<CMD>lua require("ui.cmd.cmd").run_command()<CR>', opts)
+--   api.nvim_buf_set_keymap(state.buf, 'i', '<ESC>', '<CMD>lua require("ui.cmd.cmd").close_float()<CR>', opts)
+--   api.nvim_buf_set_keymap(state.buf, 'i', '<BS>', [[<Cmd>lua require('ui.cmd.cmd').protect_prefix()<CR>]], opts)
+--
+--   vim.defer_fn(function()
+--     api.nvim_win_set_cursor(state.win, { 1, #prefix + 1 })
+--   end, 10)
+--
+--   vim.cmd('startinsert')
+-- end
+--
+-- function _G.run_command()
+--   local line = api.nvim_buf_get_lines(state.buf, 0, 1, false)[1]
+--   local command = _G.get_search_text(line)
+--
+--   if command and command ~= "" then
+--     vim.cmd(command)
+--   end
+--
+--   _G.close_float()
+-- end
+--
+-- function _G.close_float()
+--   if state.win and api.nvim_win_is_valid(state.win) then
+--     api.nvim_win_close(state.win, true)
+--   end
+--   state.win = nil
+--   state.buf = nil
+-- end
+--
+-- function _G.setup()
+--   setup_highlights()
+--
+--   api.nvim_create_user_command('FloatSearch', function()
+--     _G.create_float()
+--   end, {
+--     desc = 'Toggle floating search window'
+--   })
+-- end
+--
+-- return M]
+
+--newer
+
+-- local M = {}
+-- local api = vim.api
+-- local buf, win
+--
+-- -- local function setup_highlights()
+-- --   api.nvim_set_hl(0, 'MyCmdLineBorder', {
+-- --     fg = '#83a5ba',
+-- --     bg = '#111111',
+-- --     bold = true
+-- --   })
+-- --   api.nvim_set_hl(0, 'MySearchBackground', {
+-- --     bg = '#111111'
+-- --   })
+-- --   api.nvim_set_hl(0, 'MyCmdLineTitle', {
+-- --     bg = "#111111",
+-- --     fg = "#83a5ba",
+-- --     bold = true,
+-- --   })
+-- --   api.nvim_set_hl(0, 'CmdLinePrefix', {
+-- --     fg = '#83a5ba',
+-- --     bold = true
+-- --   })
+-- -- end
+--
+--
+-- function _G.create_float()
+--   buf = api.nvim_create_buf(false, true)
+--   local width = api.nvim_get_option("columns")
+--   local height = api.nvim_get_option("lines")
+--
+--   local win_height = 1
+--   local win_width = 40
+--   local row = math.floor((height - win_height) / 2)
+--   local col = math.floor((width - win_width) / 2)
+--
+--   local opts = {
+--     relative = "editor",
+--     width = 40,
+--     height = 1,
+--     row = 3,
+--     col = col,
+--     style = 'minimal',
+--     title = "Commands ",
+--     title_pos = 'left',
+--     border = {
+--       { " ", "MySearchBackground" },
+--       { " ", "MyFloatBorder" },
+--       { " ", "MyFloatBorder" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--       { " ", "MySearchBackground" },
+--     }
+--   }
+--
+--   win = api.nvim_open_win(buf, true, opts)
+--   api.nvim_set_option('winhl', 'Normal:MySearchBackground,FloatBorder:MyFloatBorder,FloatTitle:MyCmdLineTitle')
+--   api.nvim_buf_set_option(buf, 'winhl', 'FloatTitle:MyCmdLineTitle')
+--   api.nvim_buf_set_name(buf, "UniqueFloatingCmdLineName")
+--   api.nvim_win_set_option(win, 'winblend', 0)
+--
+--   api.nvim_buf_set_option(buf, 'buftype', 'prompt')
+--   api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
+--
+--   vim.fn.prompt_setprompt(buf, ' ')
+--
+--   vim.fn.prompt_setcallback(buf, execute_command)
+--
+--   api.nvim_buf_set_keymap(buf, 'i', '<Tab>', '<C-x><C-v>', { noremap = true, silent = true })
+--   api.nvim_buf_set_keymap(buf, 'i', '<S-Tab>', '<C-p>', { noremap = true, silent = true })
+-- end
+--
+-- function _G.execute_command(text)
+--   _G.close_floating_cmdline()
+--   vim.schedule(function()
+--     pcall(vim.cmd, text)
+--   end)
+-- end
+--
+-- function _G.close_floating_cmdline()
+--   if win and api.nvim_win_is_valid(win) then
+--     api.nvim_win_close(win, true)
+--   end
+--   win = nil
+--   buf = nil
+-- end
+--
+-- function _G.show_floating_cmdline()
+--   if win and api.nvim_win_is_valid(win) then
+--     _G.close_floating_cmdline()
+--   end
+--   _G.create_float()
+--   vim.cmd('startinsert!')
+-- end
+--
+-- function M.setup()
+--   -- setup_highlights()
+--   vim.api.nvim_set_keymap('n', ':', '<cmd>lua show_floating_cmdline()<CR>', { noremap = true, silent = true })
+--   vim.api.nvim_set_keymap('n', '<Esc>', '<cmd>lua close_floating_cmdline()<CR>', { noremap = true, silent = true })
+-- end
+--
+-- return M

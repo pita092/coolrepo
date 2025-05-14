@@ -1,0 +1,28 @@
+{
+    "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+    "description": "Awesomewm setting of sumneko.lua",
+    "diagnostics": {
+        "enable": true,
+        "globals": [
+            "awesome",
+            "awful",
+            "client",
+            "screen",
+            "tag",
+            "update_timer"
+        ]
+    },
+    "workspace": {
+        "library": [
+            "/usr/share/awesome/lib/",
+            "/usr/share/lua/"
+        ],
+        "maxPreload": 2000,
+        "preloadFileSize": 1000
+    },
+    "telemetry.enable": false,
+    "diagnostics.disable": [
+        "inject-field"
+    ]
+}
+

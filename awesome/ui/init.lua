@@ -1,0 +1,7 @@
+require("ui.bar")
+require("ui.menu")
+require("ui.dashboard.signals")
+require("ui.lock")
+require("ui.notifications")
+require("ui.settings")
+require("ui.settings.signals")
